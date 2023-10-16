@@ -3,84 +3,31 @@ class Game {
     this.container = new PIXI.Container();
 
     this.container.sortableChildren = true;
-    
-    this.board = new Board();
-    
+
+    this.selectedTiles = new Set();
+
+    this.board = new Board(this);
     this.interface = new Interface(this.board);
     this.streakManager = new StreakManager(this.board);
-
 
     this.container.addChild(this.board.container);
     this.board.container.on("tile-touch-start", this.onTileClick.bind(this));
 
-    this.interface.render();
+    this.tileTypesCount = {};
+
     this.render();
   }
 
   render() {
+    this.interface.render();
     app.stage.addChild(this.container);
-    this.removeStartMatches();
 
-    
     this.board.render();
+
+    this.isFieldColleted();
   }
 
-  removeStartMatches() {
-    let matches = this.streakManager.getMatches();
 
-    while (matches.length) {
-      this.removeMatches(matches);
-
-      const fields = this.board.fields.filter((field) => field.tile === null);
-
-      fields.forEach((field) => {
-        this.board.createTile(field);
-      });
-
-      matches = this.streakManager.getMatches();
-    }
-  }
-
-  onTileClick(tile) {
-    if (this.disabled) {
-      return;
-    }
-    if (this.selectedTile) {
-      // select new tile or make swap
-      if (!this.selectedTile.isNeighbour(tile)) {
-        this.clearSelection(tile);
-        this.selectTile(tile);
-      } else {
-        this.swap(this.selectedTile, tile);
-      }
-    } else {
-      this.selectTile(tile);
-    }
-  }
-
-  swap(selectedTile, tile, reverse) {
-    this.disabled = true;
-    selectedTile.sprite.zIndex = 2;
-
-    selectedTile.moveTo(tile.field.position, 0.2);
-
-    this.clearSelection();
-
-    tile.moveTo(selectedTile.field.position, 0.2).then(() => {
-      this.board.swap(selectedTile, tile);
-
-      if (!reverse) {
-        const matches = this.streakManager.getMatches();
-        if (matches.length) {
-          this.processMatches(matches);
-        } else {
-          this.swap(tile, selectedTile, true);
-        }
-      } else {
-        this.disabled = false;
-      }
-    });
-  }
 
   removeMatches(matches) {
     matches.forEach((match) => {
@@ -90,42 +37,111 @@ class Game {
     });
   }
 
-  processMatches(matches) {
-    this.removeMatches(matches);
-    this.processFallDown()
-      .then(() => this.addTiles())
-      .then(() => this.onFallDownOver());
+  isFieldColleted() {
+    let unbalancedTiles = [];
+
+    //подсчитывает количество каждой картинки
+    config.tiles.forEach((tile) => {
+      let count = this.board.fields.filter(
+        (field) => field.tile.type == tile.type
+      ).length;
+
+      this.tileTypesCount[`${tile.type}`] = count;
+    });
+
+    //ищет те, которые некратны трем и удаляет по одному экземпляру
+    for (var tile in this.tileTypesCount) {
+      if (this.tileTypesCount[tile] % 3 != 0) {
+        unbalancedTiles.push(tile);
+        let firstField = this.board.fields.find(
+          (field) => field.tile?.type == tile
+        );
+        firstField.tile.removeWithoutAnimation();
+      }
+    }
+
+    //добавляются новые картинки на месте удаленных
+    const fields = this.board.fields.filter((field) => field.tile === null);
+
+    fields.forEach((field) => {
+      this.board.createTile(field);
+    });
+
+    //проверка на то остались ли еще несбалансированные
+    if (unbalancedTiles.length <= 1) {
+      this.board.animateFieldAppearance();
+      return;
+    }
+
+    //повтор рекурсии
+    this.isFieldColleted();
   }
 
-  onFallDownOver() {
-    const matches = this.streakManager.getMatches();
-
-    if (matches.length) {
-      this.processMatches(matches);
+  onTileClick(tile) {
+    if (tile.isDeleted || this.interface.seconds === 0) {
+      return;
+    }
+    if (this.selectedTile) {
+      if (!this.selectedTile.isTheSameType(tile)) {
+        this.clearSelections();
+        this.selectTile(tile);
+      } else {
+        this.selectTile(tile);
+      }
     } else {
-      this.disabled = false;
+      this.selectTile(tile);
     }
   }
 
-  addTiles() {
-    return new Promise((resolve) => {
-      const fields = this.board.fields.filter((field) => field.tile === null);
-      let total = fields.length;
-      let completed = 0;
-
-      fields.forEach((field) => {
-        const tile = this.board.createTile(field);
-        tile.sprite.y = -500;
-        const delay = (Math.random() * 2) / 10 + 0.3 / (field.row + 1);
-        tile.fallDownTo(field.position, delay).then(() => {
-          ++completed;
-          if (completed >= total) {
-            resolve();
-          }
-        });
-      });
+  clearSelections() {
+    this.selectedTiles.forEach((tile) => {
+      tile.field.unselect();
+      tile.unselect();
     });
-    ``;
+
+    this.selectedTiles.clear();
+    this.selectedTile = null;
+  }
+
+  removeStreak() {
+    this.selectedTiles.forEach((tile) => {
+      tile.remove();
+    });
+
+    this.selectedTiles.clear();
+    this.selectedTile = null;
+  }
+
+  selectTile(tile) {
+    this.selectedTiles.add(tile);
+
+    this.selectedTile = tile;
+
+    this.selectedTile.select();
+    this.selectedTile.field.select();
+
+    if (this.selectedTiles.size == 3) {
+      this.removeStreak();
+
+      return;
+    }
+  }
+
+  /////////////////////////////////////////
+  fallDownTo(emptyField) {
+    for (let row = emptyField.row - 1; row >= 0; row--) {
+      let fallingField = this.board.getField(row, emptyField.col);
+
+      if (fallingField.tile) {
+        const fallingTile = fallingField.tile;
+        fallingTile.field = emptyField;
+        emptyField.tile = fallingTile;
+        fallingField.tile = null;
+        return fallingTile.fallDownTo(emptyField.position);
+      }
+    }
+
+    return Promise.resolve();
   }
 
   processFallDown() {
@@ -151,34 +167,25 @@ class Game {
     });
   }
 
-  fallDownTo(emptyField) {
-    for (let row = emptyField.row - 1; row >= 0; row--) {
-      let fallingField = this.board.getField(row, emptyField.col);
+  addTiles() {
+    return new Promise((resolve) => {
+      const fields = this.board.fields.filter((field) => field.tile === null);
+      let total = fields.length;
+      let completed = 0;
 
-      if (fallingField.tile) {
-        const fallingTile = fallingField.tile;
-        fallingTile.field = emptyField;
-        emptyField.tile = fallingTile;
-        fallingField.tile = null;
-        return fallingTile.fallDownTo(emptyField.position);
-      }
-    }
-
-    return Promise.resolve();
-  }
-
-  clearSelection() {
-    if (this.selectedTile) {
-      this.selectedTile.unselect();
-      this.selectedTile = null;
-    }
-  }
-
-  selectTile(tile) {
-    this.selectedTile = tile;
-    this.selectedTile.select();
+      fields.forEach((field) => {
+        const tile = this.board.createTile(field);
+        tile.sprite.y = -500;
+        const delay = (Math.random() * 2) / 10 + 0.3 / (field.row + 1);
+        tile.fallDownTo(field.position, delay).then(() => {
+          ++completed;
+          if (completed >= total) {
+            resolve();
+          }
+        });
+      });
+    });
   }
 }
 
 const game = new Game();
-
